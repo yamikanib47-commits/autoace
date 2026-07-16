@@ -1,0 +1,712 @@
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useEffect, useMemo, useState } from "react";
+import {
+  MessageCircle,
+  LogOut,
+  RefreshCw,
+  Trash2,
+  Share2,
+  Copy,
+  Check,
+  CheckCircle2,
+  XCircle,
+  Heart,
+  ImageOff,
+} from "lucide-react";
+import { toast } from "sonner";
+import { authService } from "@/application/services/authService";
+import { buyerService } from "@/application/services/buyerService";
+import { sellerService } from "@/application/services/sellerService";
+import { matchService } from "@/application/services/matchService";
+import { vehicleInterestService } from "@/application/services/vehicleInterestService";
+import { uploadService } from "@/application/services/uploadService";
+import {
+  buildWhatsAppLink,
+  buildBuyerFollowUpMessage,
+  buildSellerFollowUpMessage,
+  buildInterestFollowUpMessage,
+  buildShareableBuyerPost,
+} from "@/application/utils/whatsapp";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@/components/ui/dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import type {
+  BuyerRequest,
+  Match,
+  MatchStatus,
+  VehicleInterest,
+  VehicleListing,
+  VehicleStatus,
+} from "@/domain/types";
+
+const VEHICLE_STATUSES: { value: VehicleStatus; label: string }[] = [
+  { value: "available", label: "Available" },
+  { value: "reserved", label: "Reserved" },
+  { value: "sold", label: "Sold" },
+];
+
+const MATCH_STATUSES: { value: MatchStatus; label: string }[] = [
+  { value: "new", label: "New Match" },
+  { value: "reviewing", label: "Reviewing" },
+  { value: "sent_to_buyer", label: "Sent To Buyer" },
+  { value: "buyer_interested", label: "Buyer Interested" },
+  { value: "viewing_scheduled", label: "Viewing Scheduled" },
+  { value: "completed", label: "Completed" },
+  { value: "rejected", label: "Rejected" },
+];
+
+export const Route = createFileRoute("/_authenticated/admin")({
+  component: AdminDashboard,
+});
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+}
+
+// Public-facing seller form URL used in the anonymized WhatsApp post.
+// Set VITE_PUBLIC_APP_URL to your deployed domain.
+const SELLER_LINK = `${import.meta.env.VITE_PUBLIC_APP_URL ?? ""}/sell`;
+
+function AdminDashboard() {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  const [buyers, setBuyers] = useState<BuyerRequest[]>([]);
+  const [sellers, setSellers] = useState<VehicleListing[]>([]);
+  const [matches, setMatches] = useState<Match[]>([]);
+  const [interests, setInterests] = useState<VehicleInterest[]>([]);
+
+  const load = async () => {
+    setLoading(true);
+    const session = await authService.getSession();
+    if (!session) {
+      navigate({ to: "/auth", replace: true });
+      return;
+    }
+    const isAdmin = await authService.hasRole("admin");
+    setAllowed(isAdmin);
+    if (!isAdmin) {
+      setLoading(false);
+      return;
+    }
+    try {
+      const [b, s, m, i] = await Promise.all([
+        buyerService.listAllForAdmin(),
+        sellerService.listAllForAdmin(),
+        matchService.listAll(),
+        vehicleInterestService.listAllForAdmin(),
+      ]);
+      setBuyers(b);
+      setSellers(s);
+      setMatches(m);
+      setInterests(i);
+    } catch (err) {
+      toast.error("Couldn't load dashboard data", { description: (err as Error).message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const signOut = async () => {
+    await authService.signOut();
+    navigate({ to: "/auth", replace: true });
+  };
+
+  const handleDelete = async (kind: "buyer" | "seller", id: string, label: string) => {
+    if (!window.confirm(`Delete submission from ${label}? This cannot be undone.`)) return;
+    try {
+      if (kind === "buyer") {
+        await buyerService.deleteRequest(id);
+        setBuyers((prev) => prev.filter((x) => x.id !== id));
+      } else {
+        await sellerService.deleteListing(id);
+        setSellers((prev) => prev.filter((x) => x.id !== id));
+      }
+      toast.success("Submission deleted");
+    } catch (err) {
+      toast.error("Couldn't delete submission", { description: (err as Error).message });
+    }
+  };
+
+  const updateMatchStatus = async (id: string, status: MatchStatus) => {
+    try {
+      await matchService.updateStatus(id, status);
+      setMatches((prev) => prev.map((m) => (m.id === id ? { ...m, status } : m)));
+      toast.success("Match updated");
+    } catch (err) {
+      toast.error("Couldn't update match", { description: (err as Error).message });
+    }
+  };
+
+  const updateVehicleStatus = async (id: string, status: VehicleStatus) => {
+    try {
+      await sellerService.updateStatus(id, status);
+      setSellers((prev) => prev.map((x) => (x.id === id ? { ...x, status } : x)));
+      toast.success("Vehicle status updated");
+    } catch (err) {
+      toast.error("Couldn't update status", { description: (err as Error).message });
+    }
+  };
+
+  const interestsBySeller = useMemo(() => {
+    const m = new Map<string, VehicleInterest[]>();
+    for (const it of interests) {
+      const arr = m.get(it.vehicleListingId) ?? [];
+      arr.push(it);
+      m.set(it.vehicleListingId, arr);
+    }
+    return m;
+  }, [interests]);
+
+  const counts = useMemo(
+    () => ({
+      buyers: buyers.length,
+      sellers: sellers.length,
+      matches: matches.length,
+      interests: interests.length,
+    }),
+    [buyers, sellers, matches, interests],
+  );
+
+  if (loading && allowed === null) {
+    return (
+      <div className="min-h-screen flex items-center justify-center text-sm text-muted-foreground">
+        Loading dashboard…
+      </div>
+    );
+  }
+
+  if (allowed === false) {
+    return (
+      <div className="min-h-screen flex items-center justify-center px-6">
+        <div className="max-w-md text-center">
+          <h1 className="text-xl font-semibold">Not authorized</h1>
+          <p className="mt-2 text-sm text-muted-foreground">
+            This account doesn't have admin access. Ask an existing admin to grant it, or sign in
+            with a different account.
+          </p>
+          <button
+            onClick={signOut}
+            className="press mt-6 inline-flex h-11 items-center gap-2 rounded-full border border-border px-5 text-sm font-medium"
+          >
+            <LogOut className="h-4 w-4" /> Sign out
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-muted/30">
+      <header className="sticky top-0 z-10 border-b border-border bg-background/80 backdrop-blur">
+        <div className="mx-auto max-w-5xl px-6 py-4 flex items-center justify-between">
+          <div>
+            <h1 className="text-lg font-semibold tracking-tight">AutoAce Admin</h1>
+            <p className="text-xs text-muted-foreground">
+              {counts.buyers} buyer · {counts.sellers} seller submissions
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={load}
+              className="press h-10 w-10 rounded-full border border-border flex items-center justify-center"
+              aria-label="Refresh"
+              disabled={loading}
+            >
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+            </button>
+            <button
+              onClick={signOut}
+              className="press inline-flex h-10 items-center gap-2 rounded-full border border-border px-4 text-sm font-medium"
+            >
+              <LogOut className="h-4 w-4" /> Sign out
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <main className="mx-auto max-w-5xl px-6 py-8">
+        <Tabs defaultValue="matches" className="w-full">
+          <TabsList className="grid grid-cols-3 w-full max-w-md rounded-2xl">
+            <TabsTrigger value="matches" className="rounded-xl">
+              Matches ({counts.matches})
+            </TabsTrigger>
+            <TabsTrigger value="buyers" className="rounded-xl">
+              Buyers ({counts.buyers})
+            </TabsTrigger>
+            <TabsTrigger value="sellers" className="rounded-xl">
+              Sellers ({counts.sellers})
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="matches" className="mt-6">
+            {matches.length === 0 ? (
+              <EmptyState label="No matches yet. When a seller submits a car against a buyer request, it appears here." />
+            ) : (
+              <div className="grid gap-4">
+                {matches.map((m) => (
+                  <MatchCard key={m.id} m={m} onStatus={(s) => updateMatchStatus(m.id, s)} />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="buyers" className="mt-6">
+            {buyers.length === 0 ? (
+              <EmptyState label="No buyer submissions yet." />
+            ) : (
+              <div className="grid gap-4">
+                {buyers.map((b) => (
+                  <BuyerCard
+                    key={b.id}
+                    b={b}
+                    onDelete={() => handleDelete("buyer", b.id, b.name)}
+                  />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+
+          <TabsContent value="sellers" className="mt-6">
+            {sellers.length === 0 ? (
+              <EmptyState label="No seller submissions yet." />
+            ) : (
+              <div className="grid gap-4">
+                {sellers.map((s) => (
+                  <SellerCard
+                    key={s.id}
+                    s={s}
+                    interests={interestsBySeller.get(s.id) ?? []}
+                    onDelete={() => handleDelete("seller", s.id, `${s.year} ${s.make} ${s.model}`)}
+                    onStatus={(status) => updateVehicleStatus(s.id, status)}
+                  />
+                ))}
+              </div>
+            )}
+          </TabsContent>
+        </Tabs>
+      </main>
+    </div>
+  );
+}
+
+function EmptyState({ label }: { label: string }) {
+  return (
+    <div className="rounded-3xl border border-dashed border-border py-16 text-center text-sm text-muted-foreground">
+      {label}
+    </div>
+  );
+}
+
+function Row({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline gap-2 text-sm">
+      <span className="text-muted-foreground min-w-24">{label}</span>
+      <span className="font-medium">{value}</span>
+    </div>
+  );
+}
+
+function BuyerCard({ b, onDelete }: { b: BuyerRequest; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const post = useMemo(() => buildShareableBuyerPost(b, SELLER_LINK), [b]);
+  const message = useMemo(() => buildBuyerFollowUpMessage(b), [b]);
+
+  const copyPost = async () => {
+    try {
+      await navigator.clipboard.writeText(post);
+      setCopied(true);
+      toast.success("Post copied — ready to paste into WhatsApp");
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Couldn't copy. Long-press the text to copy manually.");
+    }
+  };
+
+  return (
+    <article className="rounded-3xl bg-background border border-border p-5 shadow-[var(--shadow-soft)]">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="text-base font-semibold">{b.name}</h3>
+          <p className="text-xs text-muted-foreground mt-0.5">{formatDate(b.createdAt)}</p>
+        </div>
+        <Badge variant="secondary" className="rounded-full">
+          Buyer
+        </Badge>
+      </div>
+
+      <div className="mt-4 grid gap-1.5">
+        <Row label="Phone" value={b.phone} />
+        <Row label="Budget" value={b.budget} />
+        {(b.preferredMake || b.preferredModel) && (
+          <Row
+            label="Wants"
+            value={`${b.preferredMake ?? "Any make"} ${b.preferredModel ?? ""}`.trim()}
+          />
+        )}
+        {b.preferredYear && <Row label="Year" value={b.preferredYear} />}
+        {b.city && <Row label="City" value={b.city} />}
+        {b.transmission && <Row label="Transmission" value={b.transmission} />}
+        {b.fuelType && <Row label="Fuel" value={b.fuelType} />}
+        {b.notes && <Row label="Notes" value={<span className="font-normal">{b.notes}</span>} />}
+      </div>
+
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <a
+          href={buildWhatsAppLink(b.phone, message)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="press inline-flex items-center justify-center gap-2 h-12 px-6 rounded-2xl bg-[#25D366] text-white font-semibold text-sm"
+        >
+          <MessageCircle className="h-4 w-4" /> Contact on WhatsApp
+        </a>
+        <button
+          onClick={() => setOpen(true)}
+          className="press inline-flex items-center justify-center gap-2 h-12 px-5 rounded-2xl bg-primary text-primary-foreground font-semibold text-sm"
+        >
+          <Share2 className="h-4 w-4" /> Create Buyer Request Post
+        </button>
+        <button
+          onClick={onDelete}
+          className="press inline-flex items-center justify-center gap-2 h-12 px-5 rounded-2xl border border-border text-destructive font-medium text-sm hover:bg-destructive/10"
+          aria-label="Delete submission"
+        >
+          <Trash2 className="h-4 w-4" /> Delete
+        </button>
+      </div>
+
+      <Dialog open={open} onOpenChange={setOpen}>
+        <DialogContent className="max-w-md rounded-3xl">
+          <DialogHeader>
+            <DialogTitle>Shareable buyer request</DialogTitle>
+            <DialogDescription>
+              Public info only — no name, phone, or private details. Paste into WhatsApp seller
+              groups.
+            </DialogDescription>
+          </DialogHeader>
+          <pre className="whitespace-pre-wrap break-words rounded-2xl border border-border bg-muted/40 p-4 text-sm font-sans leading-relaxed max-h-[50vh] overflow-auto">
+            {post}
+          </pre>
+          <DialogFooter>
+            <button
+              onClick={copyPost}
+              className="press inline-flex items-center justify-center gap-2 h-12 px-6 rounded-2xl bg-[#25D366] text-white font-semibold text-sm w-full"
+            >
+              {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}{" "}
+              {copied ? "Copied!" : "Copy WhatsApp Post"}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </article>
+  );
+}
+
+function SellerCard({
+  s,
+  interests,
+  onDelete,
+  onStatus,
+}: {
+  s: VehicleListing;
+  interests: VehicleInterest[];
+  onDelete: () => void;
+  onStatus: (status: VehicleStatus) => void;
+}) {
+  const [photoUrls, setPhotoUrls] = useState<string[]>([]);
+  const [showInterests, setShowInterests] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    if (s.photoPaths?.length) {
+      uploadService.resolveVehiclePhotoUrls(s.photoPaths).then((urls) => {
+        if (alive) setPhotoUrls(urls.filter(Boolean));
+      });
+    } else {
+      setPhotoUrls([]);
+    }
+    return () => {
+      alive = false;
+    };
+  }, [s.photoPaths]);
+
+  const message = buildSellerFollowUpMessage(s);
+
+  const statusTone: Record<VehicleStatus, string> = {
+    available: "bg-emerald-100 text-emerald-800",
+    reserved: "bg-amber-100 text-amber-800",
+    sold: "bg-slate-200 text-slate-800",
+  };
+
+  return (
+    <article className="rounded-3xl bg-background border border-border p-5 shadow-[var(--shadow-soft)]">
+      <div className="flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <h3 className="text-base font-semibold truncate">
+            {s.year} {s.make} {s.model}
+          </h3>
+          <p className="text-xs text-muted-foreground mt-0.5">
+            {s.name} · {formatDate(s.createdAt)}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <span
+            className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${statusTone[s.status]}`}
+          >
+            {s.status}
+          </span>
+          <Badge variant="secondary" className="rounded-full">
+            Seller
+          </Badge>
+        </div>
+      </div>
+
+      {photoUrls.length > 0 ? (
+        <div className="mt-4 grid grid-cols-4 gap-2">
+          {photoUrls.slice(0, 4).map((url, i) => (
+            <a
+              key={i}
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="block aspect-square rounded-xl overflow-hidden bg-muted border border-border"
+            >
+              <img src={url} alt="" loading="lazy" className="h-full w-full object-cover" />
+            </a>
+          ))}
+        </div>
+      ) : (
+        <div className="mt-4 flex items-center gap-2 text-xs text-muted-foreground">
+          <ImageOff className="h-3.5 w-3.5" /> No photos uploaded
+        </div>
+      )}
+
+      <div className="mt-4 grid gap-1.5">
+        <Row label="Phone" value={s.phone} />
+        <Row label="Asking" value={s.price} />
+        <Row label="Mileage" value={s.mileage} />
+        {s.transmission && <Row label="Transmission" value={s.transmission} />}
+        {s.fuelType && <Row label="Fuel" value={s.fuelType} />}
+        {s.city && <Row label="City" value={s.city} />}
+        {s.condition && <Row label="Condition" value={s.condition} />}
+        {s.description && (
+          <Row label="Description" value={<span className="font-normal">{s.description}</span>} />
+        )}
+        {s.notes && <Row label="Notes" value={<span className="font-normal">{s.notes}</span>} />}
+      </div>
+
+      <div className="mt-4 flex items-center gap-2">
+        <span className="text-xs text-muted-foreground">Status</span>
+        <Select value={s.status} onValueChange={(v) => onStatus(v as VehicleStatus)}>
+          <SelectTrigger className="h-10 rounded-xl flex-1">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {VEHICLE_STATUSES.map((x) => (
+              <SelectItem key={x.value} value={x.value}>
+                {x.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </div>
+
+      {interests.length > 0 && (
+        <div className="mt-4 rounded-2xl border border-border bg-muted/40 p-3">
+          <button
+            onClick={() => setShowInterests((v) => !v)}
+            className="w-full flex items-center justify-between text-sm font-medium"
+          >
+            <span className="inline-flex items-center gap-2">
+              <Heart className="h-4 w-4 text-primary" /> {interests.length} interested{" "}
+              {interests.length === 1 ? "buyer" : "buyers"}
+            </span>
+            <span className="text-xs text-muted-foreground">{showInterests ? "Hide" : "Show"}</span>
+          </button>
+          {showInterests && (
+            <div className="mt-3 flex flex-col gap-2">
+              {interests.map((it) => (
+                <div
+                  key={it.id}
+                  className="rounded-xl bg-background border border-border p-3 text-sm"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium">{it.name}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {formatDate(it.createdAt)}
+                    </span>
+                  </div>
+                  <div className="mt-1 text-xs text-muted-foreground">{it.phone}</div>
+                  {it.message && <p className="mt-1 text-xs">{it.message}</p>}
+                  <a
+                    href={buildWhatsAppLink(it.phone, buildInterestFollowUpMessage(it.name, s))}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-[#25D366]"
+                  >
+                    <MessageCircle className="h-3.5 w-3.5" /> Contact on WhatsApp
+                  </a>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className="mt-5 flex flex-wrap items-center gap-2">
+        <a
+          href={buildWhatsAppLink(s.phone, message)}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="press inline-flex items-center justify-center gap-2 h-12 px-6 rounded-2xl bg-[#25D366] text-white font-semibold text-sm"
+        >
+          <MessageCircle className="h-4 w-4" /> Contact Seller
+        </a>
+        <button
+          onClick={onDelete}
+          className="press inline-flex items-center justify-center gap-2 h-12 px-5 rounded-2xl border border-border text-destructive font-medium text-sm hover:bg-destructive/10"
+          aria-label="Delete submission"
+        >
+          <Trash2 className="h-4 w-4" /> Delete
+        </button>
+      </div>
+    </article>
+  );
+}
+
+function MatchCard({ m, onStatus }: { m: Match; onStatus: (s: MatchStatus) => void }) {
+  const { buyerRequest: b, vehicleListing: s, status } = m;
+  const vehicle = `${s.year} ${s.make} ${s.model}`;
+  const wanted =
+    [b.preferredMake, b.preferredModel].filter(Boolean).join(" ").trim() || "Any make/model";
+
+  const sellerMsg = `Hi ${s.name}, AutoAce here — we have a buyer interested in your ${vehicle} (asking ${s.price}). Can we chat about next steps?`;
+  const buyerMsg = `Hi ${b.name}, AutoAce here — we found a ${vehicle} matching your request (budget ${b.budget}). Would you like more details?`;
+
+  const statusTone: Record<MatchStatus, string> = {
+    new: "bg-blue-100 text-blue-800",
+    reviewing: "bg-amber-100 text-amber-800",
+    sent_to_buyer: "bg-purple-100 text-purple-800",
+    buyer_interested: "bg-emerald-100 text-emerald-800",
+    viewing_scheduled: "bg-indigo-100 text-indigo-800",
+    completed: "bg-green-100 text-green-800",
+    rejected: "bg-red-100 text-red-800",
+  };
+
+  return (
+    <article className="rounded-3xl bg-background border border-border p-5 shadow-[var(--shadow-soft)]">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold">Match</h3>
+          <p className="text-xs text-muted-foreground">{formatDate(m.createdAt)}</p>
+        </div>
+        <span className={`text-[11px] font-medium px-2.5 py-1 rounded-full ${statusTone[status]}`}>
+          {MATCH_STATUSES.find((x) => x.value === status)?.label ?? status}
+        </span>
+      </div>
+
+      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+        <div className="rounded-2xl border border-border p-3">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Buyer wants</p>
+          <p className="font-semibold text-sm mt-0.5">{wanted}</p>
+          <div className="mt-2 grid gap-0.5 text-xs text-muted-foreground">
+            <span>
+              Budget: <span className="text-foreground font-medium">{b.budget}</span>
+            </span>
+            {b.preferredYear && (
+              <span>
+                Year: <span className="text-foreground font-medium">{b.preferredYear}</span>
+              </span>
+            )}
+            {b.city && (
+              <span>
+                City: <span className="text-foreground font-medium">{b.city}</span>
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border p-3">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground">Seller offers</p>
+          <p className="font-semibold text-sm mt-0.5">{vehicle}</p>
+          <div className="mt-2 grid gap-0.5 text-xs text-muted-foreground">
+            <span>
+              Asking: <span className="text-foreground font-medium">{s.price}</span>
+            </span>
+            <span>
+              Mileage: <span className="text-foreground font-medium">{s.mileage}</span>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="mt-4 flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-muted-foreground">Status</span>
+          <Select value={status} onValueChange={(v) => onStatus(v as MatchStatus)}>
+            <SelectTrigger className="h-10 rounded-xl flex-1">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {MATCH_STATUSES.map((s) => (
+                <SelectItem key={s.value} value={s.value}>
+                  {s.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="flex flex-wrap gap-2">
+          <a
+            href={buildWhatsAppLink(s.phone, sellerMsg)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="press inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-[#25D366] text-white font-medium text-xs"
+          >
+            <MessageCircle className="h-3.5 w-3.5" /> Contact seller
+          </a>
+          <a
+            href={buildWhatsAppLink(b.phone, buyerMsg)}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="press inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-[#25D366] text-white font-medium text-xs"
+          >
+            <MessageCircle className="h-3.5 w-3.5" /> Contact buyer
+          </a>
+          <button
+            onClick={() => onStatus("buyer_interested")}
+            className="press inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl bg-primary text-primary-foreground font-medium text-xs"
+          >
+            <CheckCircle2 className="h-3.5 w-3.5" /> Approve
+          </button>
+          <button
+            onClick={() => onStatus("rejected")}
+            className="press inline-flex items-center justify-center gap-2 h-10 px-4 rounded-xl border border-border text-destructive font-medium text-xs hover:bg-destructive/10"
+          >
+            <XCircle className="h-3.5 w-3.5" /> Reject
+          </button>
+        </div>
+      </div>
+    </article>
+  );
+}
