@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { serve } from "@hono/node-server";
 import { Hono } from "hono";
 import { cors } from "hono/cors";
@@ -6,8 +7,20 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import type { Context } from "hono";
 
-const supabaseUrl = process.env.SUPABASE_URL;
-const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+function runtimeEnv(name: string) {
+  const current = process.env[name];
+  if (current && !current.includes("placeholder") && !current.includes("your-project")) return current;
+  try {
+    const lines = readFileSync(process.env.AUTOACE_ENV_FILE ?? "/home/workspace/autoace-migrated/backend/.env", "utf8").split(/\r?\n/);
+    const fromFile = lines.find((line) => line.startsWith(`${name}=`))?.slice(name.length + 1);
+    return fromFile || current;
+  } catch {
+    return current;
+  }
+}
+
+const supabaseUrl = runtimeEnv("SUPABASE_URL")?.replace(/\/+$/, "");
+const serviceRoleKey = runtimeEnv("SUPABASE_SERVICE_ROLE_KEY");
 if (!supabaseUrl || !serviceRoleKey) throw new Error("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required");
 const supabase = createClient(supabaseUrl, serviceRoleKey, { auth: { autoRefreshToken: false, persistSession: false } });
 const app = new Hono();
