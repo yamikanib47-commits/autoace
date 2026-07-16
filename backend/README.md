@@ -1,22 +1,10 @@
 # AutoAce backend
 
-Bun + Hono + SQLite REST backend implementing the contract in `../docs/ARCHITECTURE.md`.
+Bun + Hono REST API backed by Supabase Auth, Postgres, and Storage.
 
-## Local setup
+## Setup
 
-```bash
-cd backend
-bun install
-cp .env.example .env
-bun run start
-```
-
-The first boot creates the admin account from `ADMIN_EMAIL` and `ADMIN_PASSWORD`.
-Set a strong password before using this outside local development. Public submissions are rate-limited; admin endpoints require a bearer session token.
-
-## Production notes
-
-- Set `APP_ORIGIN` to the deployed frontend URL.
-- Set `HOST=0.0.0.0` on hosts that route traffic to the process.
-- Persist both `DATABASE_PATH` and `STORAGE_PATH`; they contain the application data and uploaded vehicle photos.
-- Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` only when Telegram notifications are wanted.
+1. Run `supabase/schema.sql` in the Supabase SQL Editor.
+2. Add the values from `.env.example` to the backend environment. Keep `SUPABASE_SERVICE_ROLE_KEY` server-only.
+3. Create the first user through the app or Supabase Auth, then run the admin promotion SQL in `supabase/promote-admin.sql` with that user's UUID.
+4. Start with `bun install && bun run dev`.
