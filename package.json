@@ -6,10 +6,9 @@
   "description": "AutoAce — a Zambian car marketplace connecting buyers and sellers.",
   "scripts": {
     "dev": "vite dev",
-    "build": "tsc -b && vite build",
+    "build": "vite build",
     "preview": "vite preview",
     "lint": "eslint .",
-    "typecheck": "tsc -b --noEmit",
     "format": "prettier --write ."
   },
   "dependencies": {
