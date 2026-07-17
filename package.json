@@ -6,7 +6,8 @@
   "description": "AutoAce — a Zambian car marketplace connecting buyers and sellers.",
   "scripts": {
     "dev": "vite dev",
-    "build": "tsc -b && vite build",
+    "build": "npm run generate:routes && tsc -b && vite build",
+    "generate:routes": "node scripts/generate-route-tree.mjs",
     "preview": "vite preview",
     "lint": "eslint .",
     "typecheck": "tsc -b --noEmit",
