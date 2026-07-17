@@ -13,7 +13,7 @@ import type {
   VehicleListing,
   VehicleStatus,
 } from "@/domain/types";
-import { supabase } from "./supabaseClient";
+import { getSupabaseClient } from "./supabaseClient";
 
 type Row = Record<string, unknown>;
 
@@ -110,7 +110,7 @@ async function unwrap<T>(request: PromiseLike<{ data: T | null; error: { message
 
 async function listMatchesFromRows(): Promise<Match[]> {
   const rows = await unwrap(
-    supabase
+    getSupabaseClient()
       .from("matches")
       .select("*, buyer_request:buyer_requests(*), vehicle_listing:vehicle_listings(*)")
       .order("created_at", { ascending: false }),
@@ -120,15 +120,15 @@ async function listMatchesFromRows(): Promise<Match[]> {
 
 export class SupabaseDatabaseService implements DatabaseService {
   async listActiveBuyerRequests() {
-    return (await unwrap(supabase.from("public_buyer_requests").select("*").order("created_at", { ascending: false }))).map(publicBuyer);
+    return (await unwrap(getSupabaseClient().from("public_buyer_requests").select("*").order("created_at", { ascending: false }))).map(publicBuyer);
   }
 
   async listAllBuyerRequests() {
-    return (await unwrap(supabase.from("buyer_requests").select("*").order("created_at", { ascending: false }))).map(buyer);
+    return (await unwrap(getSupabaseClient().from("buyer_requests").select("*").order("created_at", { ascending: false }))).map(buyer);
   }
 
   async createBuyerRequest(input: CreateBuyerRequestInput) {
-    return buyer(await unwrap(supabase.from("buyer_requests").insert({
+    return buyer(await unwrap(getSupabaseClient().from("buyer_requests").insert({
       name: input.name,
       phone: input.phone,
       budget: input.budget,
@@ -143,19 +143,19 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async deleteBuyerRequest(id: UUID) {
-    await unwrap(supabase.from("buyer_requests").delete().eq("id", id));
+    await unwrap(getSupabaseClient().from("buyer_requests").delete().eq("id", id));
   }
 
   async listAvailableVehicles() {
-    return (await unwrap(supabase.from("public_vehicle_listings").select("*").order("created_at", { ascending: false }))).map(publicVehicle);
+    return (await unwrap(getSupabaseClient().from("public_vehicle_listings").select("*").order("created_at", { ascending: false }))).map(publicVehicle);
   }
 
   async listAllVehicleListings() {
-    return (await unwrap(supabase.from("vehicle_listings").select("*").order("created_at", { ascending: false }))).map(vehicle);
+    return (await unwrap(getSupabaseClient().from("vehicle_listings").select("*").order("created_at", { ascending: false }))).map(vehicle);
   }
 
   async createVehicleListing(input: CreateVehicleListingInput) {
-    return vehicle(await unwrap(supabase.from("vehicle_listings").insert({
+    return vehicle(await unwrap(getSupabaseClient().from("vehicle_listings").insert({
       name: input.name,
       phone: input.phone,
       make: input.make,
@@ -175,11 +175,11 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async updateVehicleListingStatus(id: UUID, status: VehicleStatus) {
-    await unwrap(supabase.from("vehicle_listings").update({ status }).eq("id", id));
+    await unwrap(getSupabaseClient().from("vehicle_listings").update({ status }).eq("id", id));
   }
 
   async deleteVehicleListing(id: UUID) {
-    await unwrap(supabase.from("vehicle_listings").delete().eq("id", id));
+    await unwrap(getSupabaseClient().from("vehicle_listings").delete().eq("id", id));
   }
 
   listMatches() {
@@ -187,16 +187,16 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async createMatch(buyerRequestId: UUID, vehicleListingId: UUID) {
-    const row = await unwrap(supabase.from("matches").insert({ buyer_request_id: buyerRequestId, vehicle_listing_id: vehicleListingId }).select("*, buyer_request:buyer_requests(*), vehicle_listing:vehicle_listings(*)").single());
+    const row = await unwrap(getSupabaseClient().from("matches").insert({ buyer_request_id: buyerRequestId, vehicle_listing_id: vehicleListingId }).select("*, buyer_request:buyer_requests(*), vehicle_listing:vehicle_listings(*)").single());
     return match(row as unknown as Row);
   }
 
   async updateMatchStatus(id: UUID, status: MatchStatus) {
-    await unwrap(supabase.from("matches").update({ status, updated_at: new Date().toISOString() }).eq("id", id));
+    await unwrap(getSupabaseClient().from("matches").update({ status, updated_at: new Date().toISOString() }).eq("id", id));
   }
 
   async createVehicleInterest(input: CreateVehicleInterestInput) {
-    return interest(await unwrap(supabase.from("vehicle_interests").insert({
+    return interest(await unwrap(getSupabaseClient().from("vehicle_interests").insert({
       vehicle_listing_id: input.vehicleListingId,
       name: input.name,
       phone: input.phone,
@@ -205,6 +205,6 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async listVehicleInterests() {
-    return (await unwrap(supabase.from("vehicle_interests").select("*").order("created_at", { ascending: false }))).map(interest);
+    return (await unwrap(getSupabaseClient().from("vehicle_interests").select("*").order("created_at", { ascending: false }))).map(interest);
   }
 }
