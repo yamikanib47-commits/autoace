@@ -82,6 +82,7 @@ create policy user_roles_self_read on public.user_roles for select to authentica
 
 drop policy if exists buyer_requests_public_insert on public.buyer_requests;
 create policy buyer_requests_public_insert on public.buyer_requests for insert to anon, authenticated with check (true);
+grant insert on public.buyer_requests to anon, authenticated;
 drop policy if exists buyer_requests_admin_read on public.buyer_requests;
 create policy buyer_requests_admin_read on public.buyer_requests for select to authenticated using (public.is_admin());
 drop policy if exists buyer_requests_admin_delete on public.buyer_requests;
@@ -91,6 +92,7 @@ drop policy if exists vehicle_listings_public_read on public.vehicle_listings;
 create policy vehicle_listings_public_read on public.vehicle_listings for select to anon, authenticated using (status = 'available');
 drop policy if exists vehicle_listings_public_insert on public.vehicle_listings;
 create policy vehicle_listings_public_insert on public.vehicle_listings for insert to anon, authenticated with check (true);
+grant insert on public.vehicle_listings to anon, authenticated;
 drop policy if exists vehicle_listings_admin_all on public.vehicle_listings;
 create policy vehicle_listings_admin_all on public.vehicle_listings for all to authenticated using (public.is_admin()) with check (public.is_admin());
 
@@ -99,6 +101,7 @@ create policy matches_admin_all on public.matches for all to authenticated using
 
 drop policy if exists vehicle_interests_public_insert on public.vehicle_interests;
 create policy vehicle_interests_public_insert on public.vehicle_interests for insert to anon, authenticated with check (true);
+grant insert on public.vehicle_interests to anon, authenticated;
 drop policy if exists vehicle_interests_admin_read on public.vehicle_interests;
 create policy vehicle_interests_admin_read on public.vehicle_interests for select to authenticated using (public.is_admin());
 
@@ -114,11 +117,18 @@ from public.vehicle_listings where status = 'available';
 
 grant select on public.public_vehicle_listings to anon, authenticated;
 
-alter view public.public_buyer_requests set (security_invoker = true);
-alter view public.public_vehicle_listings set (security_invoker = true);
+alter view public.public_buyer_requests set (security_invoker = false);
+alter view public.public_vehicle_listings set (security_invoker = false);
 
 
 insert into storage.buckets (id, name, public) values ('vehicle-photos', 'vehicle-photos', true) on conflict (id) do update set public = true;
 
 drop policy if exists vehicle_photos_public_read on storage.objects;
 create policy vehicle_photos_public_read on storage.objects for select to anon, authenticated using (bucket_id = 'vehicle-photos');
+
+grant select on storage.objects to anon, authenticated;
+
+drop policy if exists vehicle_photos_public_insert on storage.objects;
+create policy vehicle_photos_public_insert on storage.objects for insert to anon, authenticated with check (bucket_id = 'vehicle-photos');
+
+grant insert on storage.objects to anon, authenticated;

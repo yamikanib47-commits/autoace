@@ -37,6 +37,8 @@ with check (bucket_id = 'vehicle-photos');
 
 grant select, insert on storage.objects to anon, authenticated;
 
+-- Run this after the table policies above; it is safe to re-run.
+
 -- The buyer-request view intentionally exposes no name, phone, or notes.
 -- It must not inherit the base table's admin-only SELECT policy.
 alter view public.public_buyer_requests set (security_invoker = false);
