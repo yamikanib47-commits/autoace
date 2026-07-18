@@ -128,7 +128,8 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async createBuyerRequest(input: CreateBuyerRequestInput) {
-    return buyer(await unwrap(getSupabaseClient().from("buyer_requests").insert({
+    const row = {
+      id: crypto.randomUUID(),
       name: input.name,
       phone: input.phone,
       budget: input.budget,
@@ -139,7 +140,10 @@ export class SupabaseDatabaseService implements DatabaseService {
       transmission: input.transmission ?? null,
       fuel_type: input.fuelType ?? null,
       notes: input.notes ?? null,
-    }).select().single()));
+      created_at: new Date().toISOString(),
+    };
+    await unwrap(getSupabaseClient().from("buyer_requests").insert(row));
+    return buyer(row);
   }
 
   async deleteBuyerRequest(id: UUID) {
@@ -155,7 +159,8 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async createVehicleListing(input: CreateVehicleListingInput) {
-    return vehicle(await unwrap(getSupabaseClient().from("vehicle_listings").insert({
+    const row = {
+      id: crypto.randomUUID(),
       name: input.name,
       phone: input.phone,
       make: input.make,
@@ -171,7 +176,11 @@ export class SupabaseDatabaseService implements DatabaseService {
       notes: input.notes ?? null,
       photo_paths: input.photoPaths ?? [],
       buyer_request_id: input.buyerRequestId ?? null,
-    }).select().single()));
+      status: "available",
+      created_at: new Date().toISOString(),
+    };
+    await unwrap(getSupabaseClient().from("vehicle_listings").insert(row));
+    return vehicle(row);
   }
 
   async updateVehicleListingStatus(id: UUID, status: VehicleStatus) {
@@ -196,12 +205,16 @@ export class SupabaseDatabaseService implements DatabaseService {
   }
 
   async createVehicleInterest(input: CreateVehicleInterestInput) {
-    return interest(await unwrap(getSupabaseClient().from("vehicle_interests").insert({
+    const row = {
+      id: crypto.randomUUID(),
       vehicle_listing_id: input.vehicleListingId,
       name: input.name,
       phone: input.phone,
       message: input.message ?? null,
-    }).select().single()));
+      created_at: new Date().toISOString(),
+    };
+    await unwrap(getSupabaseClient().from("vehicle_interests").insert(row));
+    return interest(row);
   }
 
   async listVehicleInterests() {
