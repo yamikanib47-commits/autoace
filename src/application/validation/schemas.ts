@@ -32,7 +32,8 @@ export const vehicleListingSchema = z.object({
   year: z
     .string()
     .trim()
-    .regex(/^\d{4}$/, "Enter a valid year"),
+    .regex(/^\d{4}$/, "Enter a valid year")
+    .refine((value) => Number(value) >= 1886 && Number(value) <= 2030, "Enter a year between 1886 and 2030"),
   price: z.string().trim().min(1, "Enter a price"),
   mileage: z.string().trim().min(1, "Enter mileage"),
   transmission: z.string().max(30).optional().or(z.literal("")),
