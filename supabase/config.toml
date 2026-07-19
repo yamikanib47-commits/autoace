@@ -1,2 +1,13 @@
 [functions.whatsapp-webhook]
 verify_jwt = false
+[functions.create-seller-request]
+verify_jwt = false
+
+[functions.vehicle-interest]
+verify_jwt = false
+
+[functions.vehicle-search]
+verify_jwt = false
+
+[functions.create-buyer-request]
+verify_jwt = false

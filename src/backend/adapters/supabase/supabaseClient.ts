@@ -7,6 +7,8 @@ export const supabaseUrlConfigured = Boolean(supabaseUrl);
 export const supabaseAnonKeyConfigured = Boolean(supabaseAnonKey);
 export const supabaseClientCreated = Boolean(supabaseUrl && supabaseAnonKey);
 
+export const edgeFunctionUrl = (name: string) => `${supabaseUrl}/functions/v1/${name}`;
+
 let client: SupabaseClient | null = null;
 let clientError: string | null = null;
 
