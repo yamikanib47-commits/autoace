@@ -16,9 +16,9 @@ if (supabaseUrl && supabaseAnonKey) {
   try {
     client = createClient(supabaseUrl, supabaseAnonKey, {
       auth: {
-        persistSession: false,
-        autoRefreshToken: false,
-        detectSessionInUrl: false,
+        persistSession: true,
+        autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
     });
   } catch (error) {
