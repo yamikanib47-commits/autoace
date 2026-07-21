@@ -1,0 +1,7 @@
+name = "autoace-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-21"
+workers_dev = true
+
+[vars]
+APP_ORIGIN = "https://autoace-cloudflare-test.pages.dev"
