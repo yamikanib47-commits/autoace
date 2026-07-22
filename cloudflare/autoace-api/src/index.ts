@@ -40,6 +40,43 @@ app.get("/vehicles/available", async (c) => { const rows = await supabase<Row[]>
 app.get("/buyer-requests/public", async (c) => { const rows = await supabase<Row[]>(c.env, "public_buyer_requests?select=*&order=created_at.desc"); return c.json(rows.map(asPublicBuyer)); });
 app.post("/buyer-requests", async (c) => { const input = await body(c, buyerSchema); const rows = await supabase<Row[]>(c.env, "buyer_requests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, budget: input.budget, preferred_make: input.preferredMake ?? null, preferred_model: input.preferredModel ?? null, preferred_year: input.preferredYear ?? null, city: input.city ?? null, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, notes: input.notes ?? null }) }); return c.json(asBuyer(rows[0]), 201); });
 app.post("/vehicles", async (c) => { const input = await body(c, vehicleSchema); if (input.buyerRequestId) { const buyerRows = await supabase<Row[]>(c.env, `buyer_requests?select=id&id=eq.${encodeURIComponent(input.buyerRequestId)}`); if (!buyerRows.length) throw new HTTPException(422, { message: "Buyer request not found" }); } const rows = await supabase<Row[]>(c.env, "vehicle_listings", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, make: input.make, model: input.model, year: input.year, price: input.price, mileage: input.mileage, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, city: input.city ?? null, description: input.description ?? null, condition: input.condition ?? null, notes: input.notes ?? null, photo_paths: input.photoPaths ?? [], buyer_request_id: input.buyerRequestId ?? null }) }); const listing = rows[0]; if (input.buyerRequestId) { await supabase(c.env, "matches", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: listing.id }) }); } return c.json(asVehicle(listing), 201); });
+app.post("/storage/vehicle-photos/:prefix", async (c) => {
+  const prefix = c.req.param("prefix");
+  if (!/^[a-zA-Z0-9_-]{1,100}$/.test(prefix)) {
+    throw new HTTPException(400, { message: "Invalid photo prefix" });
+  }
+
+  const parsed = await c.req.parseBody({ all: true });
+  const values = Array.isArray(parsed.files) ? parsed.files : [parsed.files];
+  const paths: string[] = [];
+
+  for (const value of values) {
+    if (!(value instanceof File)) continue;
+    if (!value.type.startsWith("image/") || value.size > 10 * 1024 * 1024) {
+      throw new HTTPException(422, { message: "Images only, maximum 10MB each" });
+    }
+
+    const safeName = value.name.replace(/[^a-zA-Z0-9._-]/g, "");
+    const path = `${prefix}/${crypto.randomUUID()}-${safeName || "upload"}`;
+    const response = await fetch(`${baseUrl(c.env)}/storage/v1/object/vehicle-photos/${path.split("/").map(encodeURIComponent).join("/")}`, {
+      method: "POST",
+      headers: {
+        apikey: c.env.SUPABASE_SERVICE_ROLE_KEY,
+        Authorization: `Bearer ${c.env.SUPABASE_SERVICE_ROLE_KEY}`,
+        "Content-Type": value.type,
+        "x-upsert": "false",
+      },
+      body: await value.arrayBuffer(),
+    });
+
+    if (!response.ok) {
+      throw new HTTPException(400, { message: await response.text() });
+    }
+    paths.push(path);
+  }
+
+  return c.json({ paths }, 201);
+});
 app.post("/storage/vehicle-photos/resolve", async (c) => { const input = await body(c, z.object({ paths: z.array(z.string().max(300)).max(30) })); return c.json({ urls: input.paths.map((path) => storageUrl(c.env, path)) }); });
 app.notFound((c) => c.json({ message: "Not found" }, 404));
 app.onError((error, c) => { console.error(error); return c.json({ message: error instanceof HTTPException ? error.message : "Internal server error" }, error instanceof HTTPException ? error.status : 500); });
