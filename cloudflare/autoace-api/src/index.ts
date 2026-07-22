@@ -31,7 +31,16 @@ const asVehicle = (r: Row) => ({ id: r.id, name: r.name, phone: r.phone, make: r
 const asPublicVehicle = (r: Row) => ({ id: r.id, make: r.make, model: r.model, year: r.year, price: r.price, mileage: r.mileage, transmission: r.transmission, fuelType: r.fuel_type, city: r.city, description: r.description, condition: r.condition, photoPaths: r.photo_paths ?? [], status: r.status, buyerRequestId: r.buyer_request_id, createdAt: r.created_at });
 
 function baseUrl(env: Env["Bindings"]) { return env.SUPABASE_URL.replace(/\/+$/, ""); }
-async function supabase<T>(env: Env["Bindings"], path: string, init: RequestInit = {}): Promise<T> { const response = await fetch(`${baseUrl(env)}/rest/v1/${path}`, { ...init, headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, Accept: "application/json", "Content-Type": "application/json", ...init.headers } }); if (!response.ok) throw new HTTPException(502, { message: await response.text() }); return response.status === 204 ? undefined as T : await response.json() as T; }
+async function supabase<T>(env: Env["Bindings"], path: string, init: RequestInit = {}): Promise<T> {
+  const method = init.method ?? "GET";
+  const response = await fetch(`${baseUrl(env)}/rest/v1/${path}`, { ...init, headers: { apikey: env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`, Accept: "application/json", "Content-Type": "application/json", ...init.headers } });
+  if (!response.ok) {
+    const detail = (await response.text()).slice(0, 500);
+    console.error("supabase_request_failed", { method, path, status: response.status, detail });
+    throw new HTTPException(502, { message: detail });
+  }
+  return response.status === 204 ? undefined as T : await response.json() as T;
+}
 async function body<T>(c: any, schema: z.ZodType<T>): Promise<T> { const parsed = schema.safeParse(await c.req.json().catch(() => null)); if (!parsed.success) throw new HTTPException(422, { message: parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join(", ") }); return parsed.data; }
 function storageUrl(env: Env["Bindings"], path: string) { return `${baseUrl(env)}/storage/v1/object/public/vehicle-photos/${path.split("/").map(encodeURIComponent).join("/")}`; }
 
@@ -40,6 +49,7 @@ app.get("/vehicles/available", async (c) => { const rows = await supabase<Row[]>
 app.get("/buyer-requests/public", async (c) => { const rows = await supabase<Row[]>(c.env, "public_buyer_requests?select=*&order=created_at.desc"); return c.json(rows.map(asPublicBuyer)); });
 app.post("/buyer-requests", async (c) => { const input = await body(c, buyerSchema); const rows = await supabase<Row[]>(c.env, "buyer_requests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, budget: input.budget, preferred_make: input.preferredMake ?? null, preferred_model: input.preferredModel ?? null, preferred_year: input.preferredYear ?? null, city: input.city ?? null, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, notes: input.notes ?? null }) }); return c.json(asBuyer(rows[0]), 201); });
 app.post("/vehicles", async (c) => { const input = await body(c, vehicleSchema); if (input.buyerRequestId) { const buyerRows = await supabase<Row[]>(c.env, `buyer_requests?select=id&id=eq.${encodeURIComponent(input.buyerRequestId)}`); if (!buyerRows.length) throw new HTTPException(422, { message: "Buyer request not found" }); } const rows = await supabase<Row[]>(c.env, "vehicle_listings", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, make: input.make, model: input.model, year: input.year, price: input.price, mileage: input.mileage, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, city: input.city ?? null, description: input.description ?? null, condition: input.condition ?? null, notes: input.notes ?? null, photo_paths: input.photoPaths ?? [], buyer_request_id: input.buyerRequestId ?? null }) }); const listing = rows[0]; if (input.buyerRequestId) { await supabase(c.env, "matches", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: listing.id }) }); } return c.json(asVehicle(listing), 201); });
+app.post("/storage/vehicle-photos/resolve", async (c) => { const input = await body(c, z.object({ paths: z.array(z.string().max(300)).max(30) })); return c.json({ urls: input.paths.map((path) => storageUrl(c.env, path)) }); });
 app.post("/storage/vehicle-photos/:prefix", async (c) => {
   const prefix = c.req.param("prefix");
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(prefix)) {
@@ -47,11 +57,12 @@ app.post("/storage/vehicle-photos/:prefix", async (c) => {
   }
 
   const parsed = await c.req.parseBody({ all: true });
-  const values = Array.isArray(parsed.files) ? parsed.files : [parsed.files];
-  const paths: string[] = [];
+  const rawFiles = Array.isArray(parsed.files) ? parsed.files : [parsed.files];
+  const files = rawFiles.filter((value): value is File => value instanceof File);
+  if (!files.length) throw new HTTPException(422, { message: "At least one image file is required in the files field" });
 
-  for (const value of values) {
-    if (!(value instanceof File)) continue;
+  const paths: string[] = [];
+  for (const value of files) {
     if (!value.type.startsWith("image/") || value.size > 10 * 1024 * 1024) {
       throw new HTTPException(422, { message: "Images only, maximum 10MB each" });
     }
@@ -70,14 +81,19 @@ app.post("/storage/vehicle-photos/:prefix", async (c) => {
     });
 
     if (!response.ok) {
-      throw new HTTPException(400, { message: await response.text() });
+      const detail = (await response.text()).slice(0, 500);
+      console.error("storage_upload_failed", { prefix, filename: value.name, contentType: value.type, size: value.size, status: response.status, detail });
+      throw new HTTPException(502, { message: "Vehicle photo upload failed" });
     }
     paths.push(path);
   }
 
   return c.json({ paths }, 201);
 });
-app.post("/storage/vehicle-photos/resolve", async (c) => { const input = await body(c, z.object({ paths: z.array(z.string().max(300)).max(30) })); return c.json({ urls: input.paths.map((path) => storageUrl(c.env, path)) }); });
 app.notFound((c) => c.json({ message: "Not found" }, 404));
-app.onError((error, c) => { console.error(error); return c.json({ message: error instanceof HTTPException ? error.message : "Internal server error" }, error instanceof HTTPException ? error.status : 500); });
+app.onError((error, c) => {
+  const status = error instanceof HTTPException ? error.status : 500;
+  console.error("worker_request_failed", { method: c.req.method, path: new URL(c.req.url).pathname, status, message: error.message, stack: error instanceof Error ? error.stack : undefined });
+  return c.json({ message: error instanceof HTTPException ? error.message : "Internal server error" }, status);
+});
 export default app;
