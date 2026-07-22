@@ -13,7 +13,15 @@ type Env = {
 type Row = Record<string, unknown>;
 
 const app = new Hono<Env>();
-app.use("*", cors({ origin: (origin, c) => origin === c.env.APP_ORIGIN ? origin : c.env.APP_ORIGIN ?? "*", allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "OPTIONS"] }));
+app.use("*", async (c, next) => {
+  if (c.req.method === "OPTIONS") {
+    const origin = c.req.header("Origin");
+    const allowedOrigin = origin && [c.env.APP_ORIGIN, "https://autoace-cloudflare-test.pages.dev"].includes(origin) ? origin : c.env.APP_ORIGIN ?? "*";
+    return new Response(null, { status: 204, headers: { "Access-Control-Allow-Origin": allowedOrigin, "Access-Control-Allow-Headers": "Authorization, Content-Type", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Max-Age": "86400", Vary: "Origin" } });
+  }
+  return next();
+});
+app.use("*", cors({ origin: (origin, c) => origin && [c.env.APP_ORIGIN, "https://autoace-cloudflare-test.pages.dev"].includes(origin) ? origin : c.env.APP_ORIGIN ?? "*", allowHeaders: ["Authorization", "Content-Type"], allowMethods: ["GET", "POST", "OPTIONS"] }));
 
 const buyerSchema = z.object({ name: z.string().trim().min(2).max(80), phone: z.string().trim().min(7).max(20), budget: z.string().trim().min(1).max(100), preferredMake: z.string().trim().max(60).nullable().optional(), preferredModel: z.string().trim().max(60).nullable().optional(), preferredYear: z.string().trim().max(20).nullable().optional(), city: z.string().trim().max(60).nullable().optional(), transmission: z.string().max(30).nullable().optional(), fuelType: z.string().max(30).nullable().optional(), notes: z.string().max(500).nullable().optional() });
 const vehicleSchema = z.object({ name: z.string().trim().min(2).max(80), phone: z.string().trim().min(7).max(20), make: z.string().trim().min(1).max(60), model: z.string().trim().min(1).max(60), year: z.number().int().min(1886).max(2100), price: z.string().trim().min(1).max(100), mileage: z.string().trim().min(1).max(100), transmission: z.string().max(30).nullable().optional(), fuelType: z.string().max(30).nullable().optional(), city: z.string().max(80).nullable().optional(), description: z.string().max(1000).nullable().optional(), condition: z.string().max(60).nullable().optional(), notes: z.string().max(500).nullable().optional(), photoPaths: z.array(z.string().max(300)).max(30).optional(), buyerRequestId: z.string().uuid().nullable().optional() });
