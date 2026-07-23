@@ -2,12 +2,15 @@ import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
+import { createNotificationService, notificationEvents, type NotificationEventName, type NotificationEventPayload } from "./notifications/notificationService";
 
 type Env = {
   Bindings: {
     SUPABASE_URL: string;
     SUPABASE_SERVICE_ROLE_KEY: string;
     APP_ORIGIN?: string;
+    NOTIFICATION_WEBHOOK_URL?: string;
+    NOTIFICATION_EVENT_SECRET?: string;
   };
 };
 type Row = Record<string, unknown>;
@@ -84,24 +87,60 @@ async function requireAdmin(c: any) {
   return user;
 }
 
+function notificationPayload(event: NotificationEventName, input: { title: string; name?: unknown; phone?: unknown; reason: string; metadata?: Record<string, unknown> }): NotificationEventPayload {
+  return {
+    event,
+    title: input.title,
+    name: typeof input.name === "string" ? input.name : "",
+    phone: typeof input.phone === "string" ? input.phone : "",
+    reason: input.reason,
+    metadata: input.metadata ?? {},
+    timestamp: new Date().toISOString(),
+  };
+}
+
+function notify(c: any, payload: NotificationEventPayload) {
+  c.executionCtx.waitUntil(createNotificationService(c.env).send(payload));
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBytes = new TextEncoder().encode(left);
+  const rightBytes = new TextEncoder().encode(right);
+  let difference = leftBytes.length ^ rightBytes.length;
+  const length = Math.max(leftBytes.length, rightBytes.length);
+  for (let index = 0; index < length; index += 1) {
+    difference |= (leftBytes[index] ?? 0) ^ (rightBytes[index] ?? 0);
+  }
+  return difference === 0;
+}
+
+function requireNotificationSecret(c: any) {
+  const configuredSecret = c.env.NOTIFICATION_EVENT_SECRET;
+  const authorization = c.req.header("Authorization");
+  const providedSecret = authorization?.startsWith("Bearer ") ? authorization.slice(7) : "";
+  if (!configuredSecret || !constantTimeEqual(providedSecret, configuredSecret)) {
+    throw new HTTPException(401, { message: "Notification authentication required" });
+  }
+}
+
 app.get("/health", (c) => c.json({ ok: true, service: "autoace-cloudflare-api", database: "supabase" }));
-app.post("/auth/sign-up", async (c) => { const input = await body(c, z.object({ email: z.string().trim().email(), password: z.string().min(6).max(200) })); const created = await authRequest<{ user: { id: string } }>(c.env, "admin/users", { method: "POST", body: JSON.stringify({ email: input.email.toLowerCase(), password: input.password, email_confirm: true }) }); try { await supabase(c.env, "user_roles", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ user_id: created.user.id, role: "user" }) }); } catch (error) { console.error("user_role_seed_failed", { userId: created.user.id, message: error instanceof Error ? error.message : String(error) }); } return c.json({ requiresEmailConfirmation: false }, 201); });
+app.post("/auth/sign-up", async (c) => { const input = await body(c, z.object({ email: z.string().trim().email(), password: z.string().min(6).max(200) })); const created = await authRequest<{ user: { id: string } }>(c.env, "admin/users", { method: "POST", body: JSON.stringify({ email: input.email.toLowerCase(), password: input.password, email_confirm: true }) }); try { await supabase(c.env, "user_roles", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ user_id: created.user.id, role: "user" }) }); } catch (error) { console.error("user_role_seed_failed", { userId: created.user.id, message: error instanceof Error ? error.message : String(error) }); } notify(c, notificationPayload("user_registered", { title: "New user registered", reason: "User completed registration", metadata: { userId: created.user.id }, name: input.email.toLowerCase() })); return c.json({ requiresEmailConfirmation: false }, 201); });
 app.post("/auth/sign-in", async (c) => { const input = await body(c, z.object({ email: z.string().trim().email(), password: z.string().min(6).max(200) })); const result = await authRequest<{ access_token: string; user: { id: string; email?: string } }>(c.env, "token?grant_type=password", { method: "POST", body: JSON.stringify({ email: input.email.toLowerCase(), password: input.password }) }); const user = { id: result.user.id, email: result.user.email ?? input.email, roles: await rolesFor(c.env, result.user.id) }; return c.json({ user, accessToken: result.access_token }); });
 app.post("/auth/sign-out", async (c) => { const token = c.req.header("Authorization")?.replace(/^Bearer /, ""); if (token) await fetch(`${baseUrl(c.env)}/auth/v1/logout`, { method: "POST", headers: { apikey: c.env.SUPABASE_SERVICE_ROLE_KEY, Authorization: `Bearer ${token}` } }).catch((error) => console.error("supabase_signout_failed", { message: error instanceof Error ? error.message : String(error) })); return c.body(null, 204); });
 app.get("/auth/session", async (c) => { const token = c.req.header("Authorization")?.replace(/^Bearer /, ""); if (!token) return c.body(null, 204); const user = await authenticatedUser(c.env, token); return user ? c.json({ user, accessToken: token }) : c.body(null, 204); });
 app.get("/vehicles/available", async (c) => { const rows = await supabase<Row[]>(c.env, "public_vehicle_listings?select=*&order=created_at.desc"); return c.json(rows.map(asPublicVehicle)); });
 app.get("/vehicles", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, "vehicle_listings?select=*&order=created_at.desc"); return c.json(rows.map(asVehicle)); });
 app.patch("/vehicles/:id/status", async (c) => { await requireAdmin(c); const input = await body(c, z.object({ status: vehicleStatusSchema })); await supabase(c.env, `vehicle_listings?id=eq.${encodeURIComponent(c.req.param("id"))}`, { method: "PATCH", body: JSON.stringify({ status: input.status }) }); return c.body(null, 204); });
-app.delete("/vehicles/:id", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, `vehicle_listings?id=eq.${encodeURIComponent(c.req.param("id"))}&select=id`, { method: "DELETE", headers: { Prefer: "return=representation" } }); if (!rows.length) throw new HTTPException(404, { message: "Vehicle not found" }); return c.body(null, 204); });
+app.delete("/vehicles/:id", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, `vehicle_listings?id=eq.${encodeURIComponent(c.req.param("id"))}&select=id,name,phone`, { method: "DELETE", headers: { Prefer: "return=representation" } }); if (!rows.length) throw new HTTPException(404, { message: "Vehicle not found" }); notify(c, notificationPayload("vehicle_deleted", { title: "Vehicle listing deleted", reason: "Admin deleted a vehicle listing", name: rows[0].name, phone: rows[0].phone, metadata: { vehicleListingId: c.req.param("id") } })); return c.body(null, 204); });
 app.get("/buyer-requests/public", async (c) => { const rows = await supabase<Row[]>(c.env, "public_buyer_requests?select=*&order=created_at.desc"); return c.json(rows.map(asPublicBuyer)); });
 app.get("/buyer-requests", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, "buyer_requests?select=*&order=created_at.desc"); return c.json(rows.map(asBuyer)); });
-app.delete("/buyer-requests/:id", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, `buyer_requests?id=eq.${encodeURIComponent(c.req.param("id"))}&select=id`, { method: "DELETE", headers: { Prefer: "return=representation" } }); if (!rows.length) throw new HTTPException(404, { message: "Buyer request not found" }); return c.body(null, 204); });
-app.post("/buyer-requests", async (c) => { const input = await body(c, buyerSchema); const rows = await supabase<Row[]>(c.env, "buyer_requests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, budget: input.budget, preferred_make: input.preferredMake ?? null, preferred_model: input.preferredModel ?? null, preferred_year: input.preferredYear ?? null, city: input.city ?? null, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, notes: input.notes ?? null }) }); return c.json(asBuyer(rows[0]), 201); });
-app.post("/vehicles", async (c) => { const input = await body(c, vehicleSchema); if (input.buyerRequestId) { const buyerRows = await supabase<Row[]>(c.env, `buyer_requests?select=id&id=eq.${encodeURIComponent(input.buyerRequestId)}`); if (!buyerRows.length) throw new HTTPException(422, { message: "Buyer request not found" }); } const rows = await supabase<Row[]>(c.env, "vehicle_listings", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, make: input.make, model: input.model, year: input.year, price: input.price, mileage: input.mileage, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, city: input.city ?? null, description: input.description ?? null, condition: input.condition ?? null, notes: input.notes ?? null, photo_paths: input.photoPaths ?? [], buyer_request_id: input.buyerRequestId ?? null }) }); const listing = rows[0]; if (input.buyerRequestId) { await supabase(c.env, "matches", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: listing.id }) }); } return c.json(asVehicle(listing), 201); });
+app.delete("/buyer-requests/:id", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, `buyer_requests?id=eq.${encodeURIComponent(c.req.param("id"))}&select=id,name,phone`, { method: "DELETE", headers: { Prefer: "return=representation" } }); if (!rows.length) throw new HTTPException(404, { message: "Buyer request not found" }); notify(c, notificationPayload("buyer_request_deleted", { title: "Buyer request deleted", reason: "Admin deleted a buyer request", name: rows[0].name, phone: rows[0].phone, metadata: { buyerRequestId: c.req.param("id") } })); return c.body(null, 204); });
+app.post("/buyer-requests", async (c) => { const input = await body(c, buyerSchema); const rows = await supabase<Row[]>(c.env, "buyer_requests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, budget: input.budget, preferred_make: input.preferredMake ?? null, preferred_model: input.preferredModel ?? null, preferred_year: input.preferredYear ?? null, city: input.city ?? null, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, notes: input.notes ?? null }) }); const buyer = asBuyer(rows[0]); notify(c, notificationPayload("buyer_request_created", { title: "New buyer request", reason: "Buyer submitted a vehicle request", name: input.name, phone: input.phone, metadata: { buyerRequestId: rows[0].id, budget: input.budget, preferredMake: input.preferredMake ?? null, preferredModel: input.preferredModel ?? null } })); return c.json(buyer, 201); });
+app.post("/vehicles", async (c) => { const input = await body(c, vehicleSchema); if (input.buyerRequestId) { const buyerRows = await supabase<Row[]>(c.env, `buyer_requests?select=id&id=eq.${encodeURIComponent(input.buyerRequestId)}`); if (!buyerRows.length) throw new HTTPException(422, { message: "Buyer request not found" }); } const rows = await supabase<Row[]>(c.env, "vehicle_listings", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ name: input.name, phone: input.phone, make: input.make, model: input.model, year: input.year, price: input.price, mileage: input.mileage, transmission: input.transmission ?? null, fuel_type: input.fuelType ?? null, city: input.city ?? null, description: input.description ?? null, condition: input.condition ?? null, notes: input.notes ?? null, photo_paths: input.photoPaths ?? [], buyer_request_id: input.buyerRequestId ?? null }) }); const listing = rows[0]; if (input.buyerRequestId) { const matchRows = await supabase<Row[]>(c.env, "matches?select=id", { method: "POST", headers: { Prefer: "resolution=merge-duplicates,return=representation" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: listing.id }) }); notify(c, notificationPayload("match_created", { title: "New buyer-seller match", reason: "A vehicle listing matched a buyer request", name: input.name, phone: input.phone, metadata: { matchId: matchRows[0]?.id, buyerRequestId: input.buyerRequestId, vehicleListingId: listing.id } })); } notify(c, notificationPayload("vehicle_created", { title: "New vehicle listing", reason: "Seller submitted a vehicle", name: input.name, phone: input.phone, metadata: { vehicleListingId: listing.id, make: input.make, model: input.model, year: input.year, price: input.price } })); return c.json(asVehicle(listing), 201); });
 app.post("/storage/vehicle-photos/resolve", async (c) => { const input = await body(c, z.object({ paths: z.array(z.string().max(300)).max(30) })); return c.json({ urls: input.paths.map((path) => storageUrl(c.env, path)) }); });
 app.get("/matches", async (c) => { await requireAdmin(c); const rows = await supabase<Row[]>(c.env, "matches?select=*,buyer_requests(*),vehicle_listings(*)&order=created_at.desc"); return c.json(rows.map(asMatch)); });
-app.post("/matches", async (c) => { await requireAdmin(c); const input = await body(c, z.object({ buyerRequestId: z.string().uuid(), vehicleListingId: z.string().uuid() })); const rows = await supabase<Row[]>(c.env, "matches?select=*,buyer_requests(*),vehicle_listings(*)", { method: "POST", headers: { Prefer: "return=representation,resolution=merge-duplicates" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: input.vehicleListingId }) }); return c.json(asMatch(rows[0]), 201); });
-app.patch("/matches/:id/status", async (c) => { await requireAdmin(c); const input = await body(c, z.object({ status: matchStatusSchema })); await supabase(c.env, `matches?id=eq.${encodeURIComponent(c.req.param("id"))}`, { method: "PATCH", body: JSON.stringify({ status: input.status, updated_at: new Date().toISOString() }) }); return c.body(null, 204); });
+app.post("/matches", async (c) => { await requireAdmin(c); const input = await body(c, z.object({ buyerRequestId: z.string().uuid(), vehicleListingId: z.string().uuid() })); const rows = await supabase<Row[]>(c.env, "matches?select=*,buyer_requests(*),vehicle_listings(*)", { method: "POST", headers: { Prefer: "return=representation,resolution=merge-duplicates" }, body: JSON.stringify({ buyer_request_id: input.buyerRequestId, vehicle_listing_id: input.vehicleListingId }) }); const match = asMatch(rows[0]); notify(c, notificationPayload("match_created", { title: "New match created", reason: "Admin created a buyer-seller match", metadata: { matchId: rows[0].id, buyerRequestId: input.buyerRequestId, vehicleListingId: input.vehicleListingId } })); return c.json(match, 201); });
+app.patch("/matches/:id/status", async (c) => { await requireAdmin(c); const input = await body(c, z.object({ status: matchStatusSchema })); await supabase(c.env, `matches?id=eq.${encodeURIComponent(c.req.param("id"))}`, { method: "PATCH", body: JSON.stringify({ status: input.status, updated_at: new Date().toISOString() }) }); notify(c, notificationPayload("match_status_changed", { title: "Match status changed", reason: "Admin updated a match status", metadata: { matchId: c.req.param("id"), status: input.status } })); return c.body(null, 204); });
 app.post("/storage/vehicle-photos/:prefix", async (c) => {
   const prefix = c.req.param("prefix");
   if (!/^[a-zA-Z0-9_-]{1,100}$/.test(prefix)) {
@@ -154,7 +193,30 @@ app.get("/vehicle-interests", async (c) => {
   const rows = await supabase<Row[]>(c.env, "vehicle_interests?select=*&order=created_at.desc");
   return c.json(rows.map(asInterest));
 });
-app.post("/vehicle-interests", async (c) => { const input = await body(c, z.object({ vehicleListingId: z.string().uuid(), name: z.string().trim().min(2).max(80), phone: z.string().trim().min(7).max(20), message: z.string().max(500).nullable().optional() })); const vehicleRows = await supabase<Row[]>(c.env, `vehicle_listings?select=id&id=eq.${encodeURIComponent(input.vehicleListingId)}&limit=1`); if (!vehicleRows.length) throw new HTTPException(404, { message: "Vehicle not found" }); const rows = await supabase<Row[]>(c.env, "vehicle_interests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ vehicle_listing_id: input.vehicleListingId, name: input.name, phone: input.phone, message: input.message ?? null }) }); return c.json(asInterest(rows[0]), 201); });
+app.post("/vehicle-interests", async (c) => { const input = await body(c, z.object({ vehicleListingId: z.string().uuid(), name: z.string().trim().min(2).max(80), phone: z.string().trim().min(7).max(20), message: z.string().max(500).nullable().optional() })); const vehicleRows = await supabase<Row[]>(c.env, `vehicle_listings?select=id&id=eq.${encodeURIComponent(input.vehicleListingId)}&limit=1`); if (!vehicleRows.length) throw new HTTPException(404, { message: "Vehicle not found" }); const rows = await supabase<Row[]>(c.env, "vehicle_interests", { method: "POST", headers: { Prefer: "return=representation" }, body: JSON.stringify({ vehicle_listing_id: input.vehicleListingId, name: input.name, phone: input.phone, message: input.message ?? null }) }); notify(c, notificationPayload("vehicle_interest_created", { title: "New vehicle interest", reason: "A buyer expressed interest in a vehicle", name: input.name, phone: input.phone, metadata: { vehicleInterestId: rows[0].id, vehicleListingId: input.vehicleListingId, message: input.message ?? null } })); return c.json(asInterest(rows[0]), 201); });
+app.post("/notifications/event", async (c) => {
+  requireNotificationSecret(c);
+  const input = await body(c, z.object({
+    event: z.enum(notificationEvents),
+    title: z.string().trim().min(1).max(160),
+    name: z.string().max(80).default(""),
+    phone: z.string().max(30).default(""),
+    reason: z.string().trim().min(1).max(300),
+    metadata: z.record(z.unknown()).default({}),
+    timestamp: z.string().datetime().optional(),
+  }));
+  const payload: NotificationEventPayload = {
+    event: input.event,
+    title: input.title,
+    name: input.name ?? "",
+    phone: input.phone ?? "",
+    reason: input.reason,
+    metadata: input.metadata ?? {},
+    timestamp: input.timestamp ?? new Date().toISOString(),
+  };
+  notify(c, payload);
+  return c.json({ accepted: true, event: payload.event, timestamp: payload.timestamp }, 202);
+});
 app.notFound((c) => c.json({ message: "Not found" }, 404));
 app.onError((error, c) => {
   const status = error instanceof HTTPException ? error.status : 500;
